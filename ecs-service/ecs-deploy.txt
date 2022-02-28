@@ -1,0 +1,64 @@
+cd ecs-service
+
+
+AwsProfile=dev
+EcsClusterName=lab-wilton
+EcsServiceFQDN=nginx.wiltoncarvalho.com
+LoadBalancerType=internet-facing
+EcsTaskReplicas=1
+EcsMinCapacity=1
+EcsMaxCapacity=1
+
+# List Load Balancers HTTPS Listeners
+INTERNAL_LB=$(aws --profile $AwsProfile elbv2 describe-load-balancers --output json | jq -r '.LoadBalancers[] | select(.Scheme=="internal") | select(.Type=="application") | .LoadBalancerArn')
+HttpInternalLoadBalancerListenerArn=$(aws --profile $AwsProfile elbv2 describe-listeners --load-balancer-arn $INTERNAL_LB --output json | jq -r '.Listeners[] | select(.Port==80) | .ListenerArn')
+HttpsInternalLoadBalancerListenerArn=$(aws --profile $AwsProfile elbv2 describe-listeners --load-balancer-arn $INTERNAL_LB --output json | jq -r '.Listeners[] | select(.Port==443) | .ListenerArn')
+
+EXERNAL_LB=$(aws --profile $AwsProfile elbv2 describe-load-balancers --output json | jq -r '.LoadBalancers[] | select(.Scheme=="internet-facing") | select(.Type=="application") | .LoadBalancerArn')
+HttpExternalLoadBalancerListenerArn=$(aws --profile $AwsProfile elbv2 describe-listeners --load-balancer-arn $EXERNAL_LB --output json | jq -r '.Listeners[] | select(.Port==80) | .ListenerArn')
+HttpsExternalLoadBalancerListenerArn=$(aws --profile $AwsProfile elbv2 describe-listeners --load-balancer-arn $EXERNAL_LB --output json | jq -r '.Listeners[] | select(.Port==443) | .ListenerArn')
+
+VPC=$(aws --profile dev ec2 describe-subnets --output text --filters Name=tag:Name,Values="*Private*" --query 'Subnets[0].VpcId')
+PrivateSubnetIds=$(aws --profile dev ec2 describe-subnets --output text --filters Name=tag:Name,Values="*Private*" --query 'Subnets[*].SubnetId')
+PrivateSubnetIds=($PrivateSubnetIds)
+
+
+echo $AwsProfile
+echo $EcsClusterName
+
+echo $EcsServiceFQDN
+echo $LoadBalancerType
+
+echo $VPC
+echo ${PrivateSubnetIds[0]}
+echo ${PrivateSubnetIds[1]}
+echo ${PrivateSubnetIds[2]}
+
+echo $HttpInternalLoadBalancerListenerArn
+echo $HttpsInternalLoadBalancerListenerArn
+echo $HttpExternalLoadBalancerListenerArn
+echo $HttpsExternalLoadBalancerListenerArn
+
+
+# Deploy
+aws --profile $AwsProfile cloudformation update-stack \
+    --stack-name nginx-test-wilton \
+    --template-body file://cfn-ecs-deploy-template.yaml \
+    --parameters \
+    ParameterKey=EcsClusterName,ParameterValue=$EcsClusterName \
+    ParameterKey=EcsServiceFQDN,ParameterValue=$EcsServiceFQDN \
+    ParameterKey=LoadBalancerType,ParameterValue=$LoadBalancerType \
+    ParameterKey=HttpInternalLoadBalancerListenerArn,ParameterValue=$HttpInternalLoadBalancerListenerArn \
+    ParameterKey=HttpsInternalLoadBalancerListenerArn,ParameterValue=$HttpsInternalLoadBalancerListenerArn \
+    ParameterKey=HttpExternalLoadBalancerListenerArn,ParameterValue=$HttpExternalLoadBalancerListenerArn \
+    ParameterKey=HttpsExternalLoadBalancerListenerArn,ParameterValue=$HttpsExternalLoadBalancerListenerArn \
+    ParameterKey=VPC,ParameterValue=$VPC \
+    ParameterKey=PrivateSubnetIds,ParameterValue=${PrivateSubnetIds[0]}\\,${PrivateSubnetIds[1]}\\,${PrivateSubnetIds[2]} \
+    ParameterKey=EcsTaskReplicas,ParameterValue=$EcsTaskReplicas \
+    ParameterKey=EcsMinCapacity,ParameterValue=$EcsMinCapacity \
+    ParameterKey=EcsMaxCapacity,ParameterValue=$EcsMaxCapacity \
+    --capabilities CAPABILITY_IAM
+
+EcsTaskReplicas=0
+EcsMinCapacity=0
+EcsMaxCapacity=0

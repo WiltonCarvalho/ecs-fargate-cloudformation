@@ -1,0 +1,194 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Metadata: 
+  AWS::CloudFormation::Interface: 
+    ParameterGroups: 
+      - Label: 
+          default: "Pipeline Configuration"
+        Parameters: 
+          - CodeS3Bucket
+          - CodeS3Key
+          - CodeS3ObjectVersion
+          - HttpsInternalLoadBalancerListenerArn
+          - HttpsExternalLoadBalancerListenerArn
+
+Parameters:
+  CodeS3Bucket:
+    Type: String
+    Default: wilton-lambdas
+    Description: S3 Bucket Name
+  CodeS3Key:
+    Type: String
+    Default: random-listener-priority.zip
+    Description: S3Key Zip Filename
+  CodeS3ObjectVersion:
+    Type: String
+    Default: ""
+    Description: S3 Object Version
+  HttpsInternalLoadBalancerListenerArn:
+    Type: String
+    Default: ''
+    Description: Load Balancer Listener Arn
+  HttpsExternalLoadBalancerListenerArn:
+    Type: String
+    Default: ''
+    Description: Load Balancer Listener Arn
+
+Conditions:
+  CodeS3ObjectVersionExist: !Not [ !Equals [!Ref CodeS3ObjectVersion, '']]
+
+Resources:
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Sid: ''
+          Effect: Allow
+          Principal:
+            Service: lambda.amazonaws.com
+          Action: sts:AssumeRole
+      Path: /
+      Policies:
+      - PolicyName: DescribeRulesPolicy
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+          - Effect: Allow
+            Action:
+            - elasticloadbalancing:DescribeRules
+            Resource: "*"
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  ListInternalLoadBalancer:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: !Ref AWS::StackName
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaRole.Arn
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import random
+          import uuid
+          import boto3
+          #from botocore.vendored import requests
+          SUCCESS = "SUCCESS"
+          FAILED = "FAILED"
+          # Member must have value less than or equal to 50000
+          LISTENER_RULE_PRIORITY_RANGE = 1, 5000
+          def lambda_handler(event, context):
+              print("Received event: " + json.dumps(event, indent=2))
+              physical_resource_id = event.get('PhysicalResourceId', str(uuid.uuid4()))
+              response_data = {}
+              elbv2_client = boto3.client('elbv2')
+              result = elbv2_client.describe_rules(ListenerArn=os.environ['LISTENER_ARN'])
+              in_use = list(filter(lambda s: s.isdecimal(), [r['Priority'] for r in result['Rules']]))
+              priority = None
+              while not priority or priority in in_use:
+                  priority = str(random.randint(*LISTENER_RULE_PRIORITY_RANGE))
+              data = {
+                  'current_listener_priorities': in_use,
+                  'new_listener_priority': priority
+              }
+              response_data = json.dumps(data)
+              print(response_data)
+      Runtime: python3.6
+      Timeout: 30
+      Environment:
+        Variables:
+          LISTENER_ARN: !Ref HttpsInternalLoadBalancerListenerArn
+
+  ListExternalLoadBalancer:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: !Ref AWS::StackName
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaRole.Arn
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import random
+          import uuid
+          import boto3
+          #from botocore.vendored import requests
+          SUCCESS = "SUCCESS"
+          FAILED = "FAILED"
+          # Member must have value less than or equal to 50000
+          LISTENER_RULE_PRIORITY_RANGE = 1, 5000
+          def lambda_handler(event, context):
+              print("Received event: " + json.dumps(event, indent=2))
+              physical_resource_id = event.get('PhysicalResourceId', str(uuid.uuid4()))
+              response_data = {}
+              elbv2_client = boto3.client('elbv2')
+              result = elbv2_client.describe_rules(ListenerArn=os.environ['LISTENER_ARN'])
+              in_use = list(filter(lambda s: s.isdecimal(), [r['Priority'] for r in result['Rules']]))
+              priority = None
+              while not priority or priority in in_use:
+                  priority = str(random.randint(*LISTENER_RULE_PRIORITY_RANGE))
+              data = {
+                  'current_listener_priorities': in_use,
+                  'new_listener_priority': priority
+              }
+              response_data = json.dumps(data)
+              print(response_data)
+      Runtime: python3.6
+      Timeout: 30
+      Environment:
+        Variables:
+          LISTENER_ARN: !Ref HttpsExternalLoadBalancerListenerArn
+
+  InternalLoadBalancer:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: !Ref AWS::StackName
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaRole.Arn
+      Code:
+        S3Bucket: !Ref CodeS3Bucket
+        S3Key: !Ref CodeS3Key
+        S3ObjectVersion:
+          Fn::If:
+            - CodeS3ObjectVersionExist
+            - !Ref CodeS3ObjectVersion
+            - !Ref "AWS::NoValue"
+      Runtime: python3.6
+      Timeout: 30
+      Environment:
+        Variables:
+          LISTENER_ARN: !Ref HttpsInternalLoadBalancerListenerArn
+
+  ExternalLoadBalancer:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: !Ref AWS::StackName
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaRole.Arn
+      Code:
+        S3Bucket: !Ref CodeS3Bucket
+        S3Key: !Ref CodeS3Key
+        S3ObjectVersion:
+          Fn::If:
+            - CodeS3ObjectVersionExist
+            - !Ref CodeS3ObjectVersion
+            - !Ref "AWS::NoValue"
+      Runtime: python3.6
+      Timeout: 30
+      Environment:
+        Variables:
+          LISTENER_ARN: !Ref HttpsExternalLoadBalancerListenerArn
+
+Outputs:
+  OutInternalLoadBalancer:
+    Value: !GetAtt InternalLoadBalancer.Arn
+    Export:
+      Name: InternalLoadBalancerPriorityArn
+  OutExternalLoadBalancer:
+    Value: !GetAtt ExternalLoadBalancer.Arn
+    Export:
+      Name: ExternalLoadBalancerPriorityArn

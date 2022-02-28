@@ -1,0 +1,551 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Container on ECS Fargate Cluster
+
+Metadata: 
+  AWS::CloudFormation::Interface: 
+    ParameterGroups: 
+      - Label: 
+          default: "ECS Configuration"
+        Parameters: 
+          - EcsContainerName
+          - EcsImageUri
+          - EcsContainerPort
+          - HealthCheckUri
+          - EcsServiceFQDN
+          - EcsServiceURI
+          - EcsMemoryReserved
+          - EcsMemoryLimit
+          - EcsCpuReserved
+          - EcsTaskReplicas
+          - EcsMinCapacity
+          - EcsMaxCapacity
+          - DeployMinimumHealthyPercent
+          - DeployMaximumPercent
+          - EcsAverageMemoryScaling
+
+Parameters:
+  EcsContainerName:
+    Type: String
+    Default: nginx
+    Description: ECS Container Name
+  EcsImageUri:
+    Type: String
+    Default: nginx:stable
+    Description: ECS Image URI
+  EcsContainerPort:
+    Type: Number
+    Default: 80
+    Description: ECS Container Port
+  HealthCheckCommand:
+    Type: String
+    Description: 'COMMAND http://localhost:$EcsContainerPort$HealthCheckUri'
+    Default: 'curl -fsSL -H "User-Agent: HealthCheck"'
+  HealthCheckUri:
+    Type: String
+    Default: /
+    Description: Container Health Check URI
+  EcsSecrets:
+    Type: String
+    Default: ''
+    Description: Container Variable Name
+  EcsSecretsArn:
+    Type: String
+    Default: ''
+    Description: Secrets Manager ARN
+
+  Env1:
+    Type: String
+    Description: Environment Variable Pair(Key=Value)
+    Default: ''
+  Env2:
+    Type: String
+    Description: Environment Variable Pair(Key=Value)
+    Default: ''
+  Env3:
+    Type: String
+    Description: Environment Variable Pair(Key=Value)
+    Default: ''
+  EcsMemoryLimit:
+    Type: Number
+    Default: 128
+    Description: ECS Container Port
+  EcsMemoryReserved:
+    Type: Number
+    Default: 128
+    Description: ECS Container Port
+  EcsCpuReserved:
+    Type: Number
+    Default: 64
+    Description: ECS Container Port
+  FargateCpu:
+    Type: Number
+    Default: 256
+  FargateMemory:
+    Type: Number
+    Default: 512
+  EcsClusterName:
+    Type: String
+    Default: 'default'
+  EcsTaskReplicas:
+    Type: Number
+    Default: 0
+    Description: Number of Replicas
+  EcsMinCapacity:
+    Type: Number
+    Default: 0
+    Description: Minimal Number of Replicas for AutoScaling
+  EcsMaxCapacity:
+    Type: Number
+    Default: 0
+    Description: Maximum Number of Replicas for AutoScaling
+  EcsAverageMemoryScaling:
+    Type: Number
+    Default: 90
+    Description: ECS Service Average Memory Utilization
+  DeployMaximumPercent:
+    Type: Number
+    Default: 100
+    Description: Percent Number of Replicas During Deployment
+  DeployMinimumHealthyPercent:
+    Type: Number
+    Default: 50
+    Description: Percent Number of Replicas During Deployment
+  PrivateSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Default: subnet-01d1f019a77cff721,subnet-0389e61096037c2a8
+    Description: Private Subnets
+  VPC:
+    Type: AWS::EC2::VPC::Id
+    Default: vpc-085c3d334672af212
+    Description: VPC Id
+  LoadBalancerType:
+    Type: String
+    Default: internal
+    Description: Load Balancer Type
+    AllowedValues:
+      - internet-facing
+      - internal
+  ListenerRulePriority:
+    Type: Number
+    Default: 0
+    Description: Load Balancer Listener Rule Priority
+  HttpInternalLoadBalancerListenerArn:
+    Type: String
+    Default: ''
+    Description: Load Balancer Listener Arn
+  HttpsInternalLoadBalancerListenerArn:
+    Type: String
+    Default: ''
+    Description: Load Balancer Listener Arn
+  HttpExternalLoadBalancerListenerArn:
+    Type: String
+    Default: ''
+    Description: Load Balancer Listener Arn
+  HttpsExternalLoadBalancerListenerArn:
+    Type: String
+    Default: ''
+    Description: Load Balancer Listener Arn
+  EcsServiceFQDN:
+    Type: String
+    Default: ''
+    Description: FQDN(HTTP Host Header)
+  EcsServiceURI:
+    Type: CommaDelimitedList
+    Default: '/, /*'
+    Description: 'URI(Path Pattern). Exemple: /app, /app/*'
+
+Conditions:
+  EcsSecretsArnExist: !Not [ !Equals [!Ref EcsSecrets, '']]
+  Env1Exist: !Not [ !Equals [!Ref Env1, '']]
+  Env2Exist: !Not [ !Equals [!Ref Env2, '']]
+  Env3Exist: !Not [ !Equals [!Ref Env3, '']]
+  HasLoadBalancerTypeInternal: !Equals [!Ref LoadBalancerType, 'internal']
+  HasLoadBalancerTypeExternal: !Equals [!Ref LoadBalancerType, 'internet-facing']
+  HasListenerRulePriority: !Not [ !Equals [!Ref ListenerRulePriority, '0']]
+
+Resources:
+
+  CloudWatchLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 90
+      LogGroupName: !Join [ "/" , [ /ecs, !Ref 'AWS::StackName' ] ]
+
+  Task:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Ref AWS::StackName
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: !Ref FargateCpu
+      Memory: !Ref FargateMemory
+      RuntimePlatform:
+        CpuArchitecture: ARM64
+        OperatingSystemFamily: LINUX
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: !Ref EcsContainerName
+          Image: !Ref EcsImageUri
+          # EntryPoint:
+          #   - '/bin/sh'
+          #   - '-c'
+          # Command:
+          #   - |
+          #     cat <<'EOF'> /etc/nginx/conf.d/default.conf
+          #     server_tokens off;
+          #     server {
+          #       listen 80;
+          #       server_name  _;
+          #       location / {
+          #         default_type text/plain;
+          #         expires -1;
+          #         return 200 'Client address: $remote_addr $http_x_forwarded_for\nServer address: $server_addr:$server_port\nServer name: $hostname\nDate: $time_local\nURI: $request_uri\nRequest ID: $request_id\n';
+          #       }
+          #     }
+          #     EOF
+          #     exec nginx -g 'daemon off;'
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - !Sub ${HealthCheckCommand} http://localhost:${EcsContainerPort}${HealthCheckUri} || exit 1
+            Interval: 10
+            Retries: 3
+            StartPeriod: 60
+            Timeout: 30
+          Secrets:
+            'Fn::If':
+              - EcsSecretsArnExist
+              -
+                - 
+                  Name: !Ref EcsSecrets
+                  ValueFrom:
+                    Fn::ImportValue: !Ref EcsSecretsArn
+              - !Ref "AWS::NoValue"
+          Environment:
+            'Fn::If':
+              - Env1Exist
+              -
+                - 
+                  Name: !Select [0, !Split ["=", !Ref Env1]]
+                  Value: !Select [1, !Split ["=", !Ref Env1]]
+                - 'Fn::If':
+                  - Env2Exist
+                  -
+                    Name: !Select [0, !Split ["=", !Ref Env2]]
+                    Value: !Select [1, !Split ["=", !Ref Env2]]
+                  - !Ref "AWS::NoValue"
+                - 'Fn::If':
+                  - Env3Exist
+                  -
+                    Name: !Select [0, !Split ["=", !Ref Env3]]
+                    Value: !Select [1, !Split ["=", !Ref Env3]]
+                  - !Ref "AWS::NoValue"
+              - !Ref "AWS::NoValue"
+          Memory: !Ref EcsMemoryLimit
+          MemoryReservation: !Ref EcsMemoryReserved
+          Cpu: !Ref EcsCpuReserved
+          PortMappings:
+            - ContainerPort: !Ref EcsContainerPort
+              Protocol: tcp
+              HostPort: !Ref EcsContainerPort
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref CloudWatchLogsGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: 'ecs'
+
+  # This role is required by tasks to pull container images and publish container logs to Amazon CloudWatch on your behalf
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  TaskExecutionRolePolicy:
+    Type: "AWS::IAM::ManagedPolicy"
+    Properties:
+      Roles:
+        - !Ref TaskExecutionRole
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: ReadOnlyOnSecretManager
+            Effect: Allow
+            Action:
+              - "secretsmanager:GetSecretValue"
+            Resource:
+              - !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:*"
+
+  # IAM role that tasks can use to make API requests to authorized AWS services
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+
+  TaskRolePolicy:
+    Type: "AWS::IAM::ManagedPolicy"
+    Properties:
+      Roles:
+        - !Ref TaskRole
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: ReadOnlyOnSecretManager
+            Effect: Allow
+            Action:
+              - "secretsmanager:GetSecretValue"
+            Resource:
+              - !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:*"
+          - Sid: EcsExecuteCommand
+            Effect: Allow
+            Action:
+              - "ssmmessages:CreateControlChannel"
+              - "ssmmessages:CreateDataChannel"
+              - "ssmmessages:OpenControlChannel"
+              - "ssmmessages:OpenDataChannel"
+            Resource: "*"
+
+  Service:
+    Type: AWS::ECS::Service
+    Properties:
+      TaskDefinition: !Ref Task
+      EnableExecuteCommand: true
+      Cluster: !Ref EcsClusterName
+      LaunchType: FARGATE
+      DesiredCount: !Ref EcsTaskReplicas
+      DeploymentConfiguration:
+        MaximumPercent: !Ref DeployMaximumPercent
+        MinimumHealthyPercent: !Ref DeployMinimumHealthyPercent
+        DeploymentCircuitBreaker:
+          Enable: True
+          Rollback: True
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          Subnets: !Split [',', !Join [',', !Ref PrivateSubnetIds]]
+          SecurityGroups:
+            - !Ref SecurityGroup
+      LoadBalancers: 
+        - ContainerName: !Ref EcsContainerName
+          ContainerPort: !Ref EcsContainerPort
+          TargetGroupArn: !Ref TargetGroup
+
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Join [ "" , [ 'Managed by CF Stack: ', !Ref 'AWS::StackName' ] ]
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - Description: HTTP Rule
+          IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - Description: HTTPS Rule
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Ref 'AWS::StackName'
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub ${AWS::StackName}
+      TargetType: ip
+      VpcId: !Ref VPC
+      Port: 80
+      Protocol: HTTP
+      Matcher:
+        HttpCode: 200-299
+      HealthCheckIntervalSeconds: 30
+      HealthCheckPath: !Ref HealthCheckUri
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 5
+      TargetGroupAttributes:
+      - Key: deregistration_delay.timeout_seconds
+        Value: '30'
+      # - Key: load_balancing.algorithm.type
+      #   Value: 'least_outstanding_requests'
+      - Key: load_balancing.algorithm.type
+        Value: 'round_robin'
+      Tags:
+          - Key: Name
+            Value: !Ref AWS::StackName
+
+  RandomInternalListenerRule:
+    Type: Custom::RandomInternalListenerRule
+    Condition: HasLoadBalancerTypeInternal
+    Properties:
+      ServiceToken: 
+        Fn::ImportValue: InternalLoadBalancerPriorityArn
+
+  RandomExternalListenerRule:
+    Type: Custom::RandomExternalListenerRule
+    Condition: HasLoadBalancerTypeExternal
+    Properties:
+      ServiceToken: 
+        Fn::ImportValue: ExternalLoadBalancerPriorityArn
+
+  HttpInternalLoadBalancerListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Condition: HasLoadBalancerTypeInternal
+    Properties:
+      ListenerArn: !Ref HttpInternalLoadBalancerListenerArn
+      Priority: !If
+        - HasListenerRulePriority
+        - !Ref ListenerRulePriority
+        - !GetAtt RandomInternalListenerRule.Priority
+      Conditions:
+        - Field: host-header
+          Values:
+            - !Ref EcsServiceFQDN
+        - Field: path-pattern
+          Values:
+            - !Select [ 0, !Ref EcsServiceURI ]
+            - !Select [ 1, !Ref EcsServiceURI ]
+      Actions:
+        - TargetGroupArn: !Ref TargetGroup
+          Type: forward
+  HttpsInternalLoadBalancerListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Condition: HasLoadBalancerTypeInternal
+    Properties:
+      ListenerArn: !Ref HttpsInternalLoadBalancerListenerArn
+      Priority: !If
+        - HasListenerRulePriority
+        - !Ref ListenerRulePriority
+        - !GetAtt RandomInternalListenerRule.Priority
+      Conditions:
+        - Field: host-header
+          Values:
+            - !Ref EcsServiceFQDN
+        - Field: path-pattern
+          Values:
+            - !Select [ 0, !Ref EcsServiceURI ]
+            - !Select [ 1, !Ref EcsServiceURI ]
+      Actions:
+        - TargetGroupArn: !Ref TargetGroup
+          Type: forward
+
+  HttpExternalLoadBalancerListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Condition: HasLoadBalancerTypeExternal
+    Properties:
+      ListenerArn: !Ref HttpExternalLoadBalancerListenerArn
+      Priority: !If
+        - HasListenerRulePriority
+        - !Ref ListenerRulePriority
+        - !GetAtt RandomExternalListenerRule.Priority
+      Conditions:
+        - Field: host-header
+          Values:
+            - !Ref EcsServiceFQDN
+        - Field: path-pattern
+          Values:
+            - !Select [ 0, !Ref EcsServiceURI ]
+            - !Select [ 1, !Ref EcsServiceURI ]
+      Actions:
+        - TargetGroupArn: !Ref TargetGroup
+          Type: forward
+
+  HttpsExternalLoadBalancerListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Condition: HasLoadBalancerTypeExternal
+    Properties:
+      ListenerArn: !Ref HttpsExternalLoadBalancerListenerArn
+      Priority: !If
+        - HasListenerRulePriority
+        - !Ref ListenerRulePriority
+        - !GetAtt RandomExternalListenerRule.Priority
+      Conditions:
+        - Field: host-header
+          Values:
+            - !Ref EcsServiceFQDN
+        - Field: path-pattern
+          Values:
+            - !Select [ 0, !Ref EcsServiceURI ]
+            - !Select [ 1, !Ref EcsServiceURI ]
+      Actions:
+        - TargetGroupArn: !Ref TargetGroup
+          Type: forward
+
+  ScalableTargetRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs.application-autoscaling.amazonaws.com
+            Action: sts:AssumeRole
+
+  ScalableTargetRolePolicy:
+    Type: "AWS::IAM::ManagedPolicy"
+    Properties:
+      Roles:
+        - !Ref ScalableTargetRole
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - "ecs:DescribeServices"
+              - "ecs:UpdateService"
+              - "cloudwatch:PutMetricAlarm"
+              - "cloudwatch:DescribeAlarms"
+              - "cloudwatch:DeleteAlarms"
+            Resource: "*"
+
+  ScalableTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      MaxCapacity: !Ref EcsMaxCapacity
+      MinCapacity: !Ref EcsMinCapacity
+      RoleARN: !Sub arn:aws:iam::${AWS::AccountId}:role/aws-service-role/ecs.application-autoscaling.amazonaws.com/AWSServiceRoleForApplicationAutoScaling_ECSService
+      ServiceNamespace: ecs
+      ScalableDimension: ecs:service:DesiredCount
+      ResourceId: !Join [ '/', [ 'service', !Ref EcsClusterName, !GetAtt Service.Name ] ]
+
+  TargetTrackingScalingPolicyMem:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub ${AWS::StackName}-scaling-policy
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref ScalableTarget
+      TargetTrackingScalingPolicyConfiguration:
+        TargetValue: !Ref EcsAverageMemoryScaling
+        ScaleInCooldown: 300
+        ScaleOutCooldown: 300
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageMemoryUtilization
+
+Outputs:
+  Endpoint:
+    Description: Listener Endpoint
+    Value: !Join [ '', [ 'https://', !Ref EcsServiceFQDN ] ]
+  OutElbPriority:
+    Description: Listener Rule Priority
+    Value: !If
+      - HasLoadBalancerTypeInternal
+      - !GetAtt RandomInternalListenerRule.Priority
+      - !GetAtt RandomExternalListenerRule.Priority

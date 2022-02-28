@@ -1,0 +1,248 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Application Load Balancer with HTTPS from ACM and Logs on S3 Bucket
+
+Parameters:
+  ElbType:
+    Type: String
+    Default: internet-facing
+    Description: ELB Type
+    AllowedValues:
+      - internet-facing
+      - internal
+
+  ElbCertificateArn:
+    Type: String
+    Default: arn:aws:acm:sa-east-1:111111111111:certificate/74f867e9-1718-47ff-afc0-c7f18864bfec
+    Description: ELB CertificateArn
+
+  ElbSecurityPolicy:
+    Type: String
+    Default: ELBSecurityPolicy-FS-1-2-Res-2020-10
+    Description: ELB Security Policy
+
+  VPC:
+    Type: AWS::EC2::VPC::Id
+    Default: vpc-085c3d334672af212
+    Description: VPC Id
+
+  PublicSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Default: subnet-0851b8f8d0bb24531,subnet-05772064bf52696c4
+    Description: Public Subnets
+
+  PrivateSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Default: subnet-01d1f019a77cff721,subnet-0389e61096037c2a8
+    Description: Private Subnets
+
+Mappings:
+  Region2ELBAccountId:
+    af-south-1:
+      AccountId: '098369216593'
+    ap-east-1:
+      AccountId: '754344448648'
+    ap-northeast-1:
+      AccountId: '582318560864'
+    ap-northeast-2:
+      AccountId: '600734575887'
+    ap-northeast-3:
+      AccountId: '383597477331'
+    ap-south-1:
+      AccountId: '718504428378'
+    ap-southeast-1:
+      AccountId: '114774131450'
+    ap-southeast-2:
+      AccountId: '783225319266'
+    ca-central-1:
+      AccountId: '985666609251'
+    cn-north-1:
+      AccountId: '638102146993'
+    cn-northwest-1:
+      AccountId: '037604701340'
+    eu-central-1:
+      AccountId: '054676820928'
+    eu-north-1:
+      AccountId: '897822967062'
+    eu-south-1:
+      AccountId: '635631232127'
+    eu-west-1:
+      AccountId: '156460612806'
+    eu-west-2:
+      AccountId: '652711504416'
+    eu-west-3:
+      AccountId: '009996457667'
+    me-south-1:
+      AccountId: '076674570225'
+    sa-east-1:
+      AccountId: '507241528517'
+    us-east-1:
+      AccountId: '127311923021'
+    us-east-2:
+      AccountId: '033677994240'
+    us-west-1:
+      AccountId: '027434742980'
+    us-west-2:
+      AccountId: '797873946194'
+
+Conditions:
+  HasElbTypeInternal: !Equals [!Ref ElbType, 'internal']
+  HasElbCertificateArn: !Not [!Equals [!Ref ElbCertificateArn, '']]
+
+Resources:
+  LogsBucket:
+    Type: 'AWS::S3::Bucket'
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      AccessControl: Private
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteLogs
+            Prefix: Logs
+            Status: Enabled
+            ExpirationInDays: 1
+            # Transitions:
+            #   - TransitionInDays: 1
+            #     StorageClass: GLACIER
+      # VersioningConfiguration:
+      #   Status: Enabled
+      # BucketEncryption:
+      #   ServerSideEncryptionConfiguration :
+      #     -
+      #       ServerSideEncryptionByDefault:
+      #         KMSMasterKeyID: !Sub arn:aws:kms:${AWS::Region}:${AWS::AccountId}:alias/aws/s3
+      #         SSEAlgorithm: aws:kms
+
+  LogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Bucket: !Ref LogsBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Action: 
+              - s3:PutObject
+            Resource: 
+              - !Sub ${LogsBucket.Arn}/Logs/AWSLogs/${AWS::AccountId}/*
+            Principal:
+              AWS: !FindInMap 
+                - Region2ELBAccountId
+                - !Ref 'AWS::Region'
+                - AccountId
+          - Effect: Allow
+            Principal:
+              Service: delivery.logs.amazonaws.com
+            Action:
+              - s3:PutObject
+            Resource: 
+              - !Sub ${LogsBucket.Arn}/Logs/AWSLogs/${AWS::AccountId}/*
+            Condition:
+              StringEquals:
+                's3:x-amz-acl': bucket-owner-full-control
+          - Effect: Allow
+            Principal:
+              Service: delivery.logs.amazonaws.com
+            Action:
+              - s3:GetBucketAcl
+            Resource:
+              - !Sub ${LogsBucket.Arn}
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    DependsOn: LogsBucketPolicy
+    Properties:
+      Scheme: !Ref ElbType
+      SecurityGroups:
+        - !Ref SecurityGroup
+      Subnets: !If
+      - HasElbTypeInternal
+      - !Split [',', !Join [',', !Ref PrivateSubnetIds]]
+      - !Split [',', !Join [',', !Ref PublicSubnetIds]]
+      LoadBalancerAttributes:
+        - Key: access_logs.s3.enabled
+          Value: 'true'
+        - Key: access_logs.s3.bucket
+          Value: !Ref LogsBucket
+        - Key: access_logs.s3.prefix
+          Value: Logs
+
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Join [ "" , [ 'Managed by CF Stack: ', !Ref 'AWS::StackName' ] ]
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - Description: HTTP Rule
+          IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - Description: HTTPS Rule
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Ref 'AWS::StackName'
+
+  HttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: fixed-response
+          FixedResponseConfig:
+            ContentType: text/plain
+            MessageBody: "Forbidden!"
+            StatusCode: '403'
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  HttpsListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: HasElbCertificateArn
+    Properties:
+      Certificates:
+      - CertificateArn: !Ref ElbCertificateArn
+      SslPolicy: !Ref ElbSecurityPolicy
+      DefaultActions:
+        - Type: fixed-response
+          FixedResponseConfig:
+            ContentType: text/plain
+            MessageBody: "Forbidden!"
+            StatusCode: '403'
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 443
+      Protocol: HTTPS
+
+Outputs:
+
+  OutLoadBalancer:
+    Description: LoadBalancer DNSName
+    Value: !GetAtt LoadBalancer.DNSName
+    Export:
+      Name: !Sub "${AWS::StackName}-DNSName"
+  OutHttpListener:
+    Description: HttpListener Arn
+    Value: !Ref HttpListener
+    Export:
+      Name: !Sub "${AWS::StackName}-HttpListenerArn"
+  OutHttpsListener:
+    Condition: HasElbCertificateArn
+    Description: HttpsListener Arn
+    Value: !Ref HttpsListener
+    Export:
+      Name: !Sub "${AWS::StackName}-HttpsListenerArn"
+  OutSecurityGroup:
+    Description: SecurityGroup ID
+    Value: !Ref SecurityGroup
+    Export:
+      Name: !Sub "${AWS::StackName}-SecurityGroupId"

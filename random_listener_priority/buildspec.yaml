@@ -1,0 +1,42 @@
+version: 0.2
+env:
+  variables:
+    COMMIT_HASH: ""
+    CodeS3Bucket: "codepipelinebucket-sa-east-1-111111111111"
+    CodeS3Key: "random-listener-priority.zip"
+    CodeS3ObjectVersion: ""
+    CloudFormationStackName: "random-listener-priority"
+    CloudFormationTemplateFile: "cfn-lambda-py-deploy-template.yaml"
+    CloudFormationConfigFile: "cfn-codepipeline-parameters.json"
+    CloudFormationParameterOverrides: "cfn-parameters-overrides.json"
+  exported-variables:
+    - COMMIT_HASH
+    - CodeS3Bucket
+    - CodeS3Key
+    - CodeS3ObjectVersion
+    - CloudFormationTemplateFile
+    - CloudFormationStackName
+    - CloudFormationConfigFile
+    - CloudFormationParameterOverrides
+phases:
+  pre_build:
+    commands:
+      - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-8)
+  build:
+    commands:
+      - echo "Build started on `date`"
+      - pip3 install --target ./package requests
+      - cp index.py package/
+      - cd package
+      - zip -r9 ${OLDPWD}/$CodeS3Key .
+      - cd $OLDPWD
+  post_build:
+    commands:
+      - aws s3api put-object --bucket $CodeS3Bucket --key $CodeS3Key --tagging "COMMIT_HASH=$COMMIT_HASH" --body $CODEBUILD_SRC_DIR/$CodeS3Key
+      - CodeS3ObjectVersion=$(aws s3api list-object-versions --bucket $CodeS3Bucket --prefix $CodeS3Key --query 'Versions[?IsLatest].[VersionId]' --output text)
+      - printf '{"CodeS3ObjectVersion":"%s"}' "$CodeS3ObjectVersion" > ${CloudFormationParameterOverrides}
+artifacts:
+  files:
+    - ${CloudFormationTemplateFile}
+    - ${CloudFormationConfigFile}
+    - ${CloudFormationParameterOverrides}

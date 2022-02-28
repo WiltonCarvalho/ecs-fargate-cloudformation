@@ -1,0 +1,22 @@
+AWSTemplateFormatVersion: 2010-09-09
+Resources:
+  WiltonCarvalhoComCert:
+    Type: 'AWS::CertificateManager::Certificate'
+    Properties:
+      DomainName: wiltoncarvalho.com
+      SubjectAlternativeNames:
+        - 'wiltoncarvalho.com'
+        - '*.wiltoncarvalho.com'
+      DomainValidationOptions:
+        - DomainName: wiltoncarvalho.com
+          ValidationDomain: wiltoncarvalho.com
+      ValidationMethod: DNS
+      Tags:
+        - Key: Name
+          Value: WiltonCarvalhoCom
+Outputs:
+  OutWiltonCarvalhoComCert:
+    Description: WiltonCarvalhoComCert Arn
+    Value: !Ref WiltonCarvalhoComCert
+    Export:
+      Name: "WiltonCarvalhoComCert"

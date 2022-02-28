@@ -1,0 +1,221 @@
+# Copyright 2019-2020 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy of this
+# software and associated documentation files (the "Software"), to deal in the Software
+# without restriction, including without limitation the rights to use, copy, modify,
+# merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+# permit persons to whom the Software is furnished to do so.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+# PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+# HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+# SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: The AWS CloudFormation template for building a CICD pipeline for cross account deployment to S3 bucket.
+
+Parameters:
+  ProjectName:
+    Description: Name of the Project
+    Type: String
+    Default: fn-random-listener-priority
+  CodeCommitRepositoryName:
+    Description: CodeCommitRepositoryName
+    Type: String
+    Default: random_listener_priority
+  CodeCommitRepositoryBranch:
+    Description: CodeCommitRepositoryBranch
+    Type: String
+    Default: develop
+    AllowedValues:
+      - develop
+      - master
+  CloudFormationStackName:
+    Type: String
+    Default: '#{BuildVariables.CloudFormationStackName}'
+    Description: Cloud Formation Stack Name
+  CloudFormationTemplateFile:
+    Type: String
+    Default: '#{BuildVariables.CloudFormationTemplateFile}'
+    Description: Cloud Formation Template
+  CloudFormationConfigFile:
+    Type: String
+    Default: '#{BuildVariables.CloudFormationConfigFile}'
+    Description: Cloud Formation TemplateConfiguration
+  # Account Id of the deployment target.
+  TargetAccountID:
+    Description : Account ID of the target account where the deployment will happen.
+    Type: String
+    Default: 111111111111
+    ConstraintDescription: Must be a valid AWS Account ID without hyphens.
+    AllowedPattern: '\d{12}'
+    MinLength: 12
+    MaxLength: 12
+  # Cross Account Role to be assumed by code pipeline to carry out deployment
+  CodePipelineAssumeRoleName:
+    Type: String
+    Description: Cross Account Role to be assumed by code pipeline to carry out deployment
+    Default: cross-account-pipeline-assume-role
+  # Cloudformation Service Role to create resources
+  CFExecutionRoleName:
+    Type: String
+    Description: Cross Account Role to be assumed by Cloudformation Service to create resources
+    Default: cloudformation-execution-role
+  AppVersion:
+    Type: String
+    Default: '#{BuildVariables.AppVersion}'
+    Description: Vesion
+
+Resources:
+  CodeBuild:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Ref ProjectName
+      Description: !Ref ProjectName
+      ServiceRole: !ImportValue CodeBuildRoleArn
+      EncryptionKey: !ImportValue CodePipelineKMSKeyArn
+      Artifacts:
+        Type: CODEPIPELINE
+      Source:
+        BuildSpec: buildspec.yml
+        Type: CODEPIPELINE
+        Location: !Sub https://git-codecommit.${AWS::Region}.amazonaws.com/v1/repos/${CodeCommitRepositoryName}
+      SourceVersion: !Sub refs/heads/${CodeCommitRepositoryBranch}
+      TimeoutInMinutes: 10
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Type: LINUX_CONTAINER
+        Image: aws/codebuild/standard:4.0
+        ImagePullCredentialsType: CODEBUILD
+        PrivilegedMode: false
+        EnvironmentVariables:
+          - Name: PipelineName
+            Type: PLAINTEXT
+            Value: !Sub '${ProjectName}'
+
+  CodePipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Ref ProjectName
+      RestartExecutionOnUpdate: False
+      ArtifactStore:
+        Type: S3
+        Location: !ImportValue CodePipelineS3BucketName
+        EncryptionKey:
+          Id: !ImportValue CodePipelineKMSKeyArn
+          Type: "KMS"
+      RoleArn: !ImportValue CodePipelineRoleArn
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: Source
+              RunOrder: 1
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeCommit
+                Version: "1"
+              Configuration:
+                RepositoryName: !Ref CodeCommitRepositoryName
+                PollForSourceChanges: 'false'
+                BranchName: !Ref CodeCommitRepositoryBranch
+              Namespace: SourceVariables
+              OutputArtifacts:
+                - Name: SourceArtifact
+        - Name: Build
+          Actions:
+            - Name: Build
+              RunOrder: 1
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Ref CodeBuild
+              Namespace: BuildVariables
+              InputArtifacts:
+                - Name: SourceArtifact
+              OutputArtifacts:
+                - Name: BuildArtifact
+        - Name: Deploy
+          Actions:
+            - Name: Copy-to-S3
+              RunOrder: 1
+              Region: !Ref AWS::Region
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: S3
+                Version: '1'
+              Configuration:
+                BucketName: !ImportValue CodePipelineS3BucketName
+                Extract: 'false'
+                ObjectKey: !Sub ${ProjectName}/cloudformation-version-${AppVersion}.zip
+              InputArtifacts:
+              - Name: BuildArtifact
+              OutputArtifacts: []
+            - Name: ApplyChangeHml
+              RunOrder: 2
+              Region: !Ref AWS::Region
+              RoleArn: !Sub arn:aws:iam::${TargetAccountID}:role/${CodePipelineAssumeRoleName}
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: "1"
+              Configuration:
+                #ChangeSetName: !Sub version-${AppVersion}
+                #ActionMode: CHANGE_SET_REPLACE
+                ActionMode: CREATE_UPDATE
+                StackName: !Ref CloudFormationStackName
+                Capabilities: CAPABILITY_IAM
+                TemplatePath: !Sub BuildArtifact::${CloudFormationTemplateFile}
+                TemplateConfiguration: !Sub BuildArtifact::${CloudFormationConfigFile}
+                ParameterOverrides: |
+                  {"CodeS3ObjectVersion" : 
+                    { "Fn::GetParam" : [ "BuildArtifact", "cfn-parameters-overrides.json", "CodeS3ObjectVersion" ] }
+                  }
+                RoleArn: !Sub arn:aws:iam::${TargetAccountID}:role/${CFExecutionRoleName}
+              InputArtifacts:
+                - Name: BuildArtifact
+              OutputArtifacts: []
+
+  CodeCheckinCloudWatchEvent:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: CloudWatch event rule to trigger CICD pipeline upon code check into code commit repo
+      EventPattern:
+        source:
+          - aws.codecommit
+        detail-type:
+          - "CodeCommit Repository State Change"
+        resources:
+          - !Sub arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:${CodeCommitRepositoryName}
+        detail:
+          event:
+            - referenceCreated
+            - referenceUpdated
+          referenceType:
+            - branch
+          referenceName:
+            - !Ref CodeCommitRepositoryBranch
+      Name: !Ref AWS::StackName
+      State: ENABLED
+      Targets:
+        -
+          Arn: !Sub arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${CodePipeline}
+          RoleArn: !ImportValue CloudWatchPipelineTriggerRoleArn
+          Id: !Ref AWS::StackName
+
+Outputs:
+  OutCodePipeline:
+    Description: CICD Pipeline Name
+    Value: !Ref CodePipeline
+  OutCodePipelineURL:
+    Value: !Sub "https://console.aws.amazon.com/codepipeline/home?region=${AWS::Region}#/view/${CodePipeline}"
+    Export:
+      Name: !Sub CodePipelineURL-${AWS::StackName}

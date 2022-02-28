@@ -1,0 +1,72 @@
+# Build Lambda in Docker
+cd random_listener_priority
+
+docker run --name builder -it --rm -v $PWD:/code -w /code python:3.6-alpine ash
+pip install --no-cache-dir --upgrade pip
+pip install --no-cache-dir --target ./package requests
+apk add --no-cache zip
+cp index.py package/
+cd package
+zip -r9 ../random-listener-priority.zip .
+cd ..
+rm -rf package
+exit
+
+CodeS3Bucket=wilton-lambdas
+CodeS3Key=random-listener-priority.zip
+AwsProfile=dev
+
+# Upload Lambda Code to S3 Bucket
+aws --profile $AwsProfile s3api put-object --bucket $CodeS3Bucket --key $CodeS3Key --tagging "TIMESTAMP=$(date +%s)" --body $CodeS3Key
+
+# Get Object VersionID
+CodeS3ObjectVersion=$(aws --profile $AwsProfile s3api list-object-versions --bucket $CodeS3Bucket --prefix $CodeS3Key --query 'Versions[?IsLatest].[VersionId]' --output text)
+
+# List Load Balancers HTTPS Listeners
+INTERNAL_LB=$(aws --profile $AwsProfile elbv2 describe-load-balancers --output json | jq -r '.LoadBalancers[] | select(.Scheme=="internal") | select(.Type=="application") | .LoadBalancerArn')
+HttpsInternalLoadBalancerListenerArn=$(aws --profile $AwsProfile elbv2 describe-listeners --load-balancer-arn $INTERNAL_LB --output json | jq -r '.Listeners[] | select(.Port==443) | .ListenerArn')
+
+EXERNAL_LB=$(aws --profile $AwsProfile elbv2 describe-load-balancers --output json | jq -r '.LoadBalancers[] | select(.Scheme=="internet-facing") | select(.Type=="application") | .LoadBalancerArn')
+HttpsExternalLoadBalancerListenerArn=$(aws --profile $AwsProfile elbv2 describe-listeners --load-balancer-arn $EXERNAL_LB --output json | jq -r '.Listeners[] | select(.Port==443) | .ListenerArn')
+
+echo $AwsProfile
+echo $HttpsInternalLoadBalancerListenerArn
+echo $HttpsExternalLoadBalancerListenerArn
+echo $CodeS3Bucket
+echo $CodeS3Key
+echo $CodeS3ObjectVersion
+
+
+# Test
+docker run --name test -it --rm \
+    -v $HOME/.aws:/.aws:ro \
+    -e AWS_CONFIG_FILE:=/.aws/config \
+    -e AWS_PROFILE=$AwsProfile \
+    -e AWS_REGION=sa-east-1 \
+    -e AWS_DEFAULT_REGION=sa-east-1 \
+    -e AWS_SHARED_CREDENTIALS_FILE=/.aws/credentials \
+    -e LISTENER_ARN=$HttpsInternalLoadBalancerListenerArn \
+    -v $PWD:/code -w /code python:3.6-alpine ash
+apk add --no-cache jq
+pip install --no-cache-dir --upgrade pip
+pip install --no-cache-dir boto3
+python listener-priority.py | jq
+
+# Deploy
+aws --profile $AwsProfile cloudformation update-stack \
+    --stack-name RandomListenerRulePriority \
+    --template-body file://cfn-lambda-py-deploy-template.yaml \
+    --parameters \
+    ParameterKey=CodeS3Bucket,ParameterValue=$CodeS3Bucket \
+    ParameterKey=CodeS3Key,ParameterValue=$CodeS3Key \
+    ParameterKey=CodeS3ObjectVersion,ParameterValue=$CodeS3ObjectVersion \
+    ParameterKey=HttpsInternalLoadBalancerListenerArn,ParameterValue=$HttpsInternalLoadBalancerListenerArn \
+    ParameterKey=HttpsExternalLoadBalancerListenerArn,ParameterValue=$HttpsExternalLoadBalancerListenerArn \
+    --capabilities CAPABILITY_IAM
+
+# Invoke List External
+FN=$(aws --profile $AwsProfile cloudformation describe-stack-resources --stack-name RandomListenerRulePriority --output json | jq -r '.StackResources[] | select(.PhysicalResourceId | contains("ListExternal")) | .PhysicalResourceId')
+
+aws --profile $AwsProfile lambda invoke --payload '{}' \
+    --function-name $FN /dev/null \
+    --log-type Tail | jq -r .LogResult  | base64 -d | grep ^{ | jq .
