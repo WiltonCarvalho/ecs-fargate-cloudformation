@@ -39,11 +39,10 @@ echo $HttpsInternalLoadBalancerListenerArn
 echo $HttpExternalLoadBalancerListenerArn
 echo $HttpsExternalLoadBalancerListenerArn
 
-
 # Deploy
 aws --profile $AwsProfile cloudformation update-stack \
     --stack-name nginx-test-wilton \
-    --template-body file://cfn-ecs-deploy-template.yaml \
+    --template-body file://cfn-ecs-fargate-template.yaml \
     --parameters \
     ParameterKey=EcsClusterName,ParameterValue=$EcsClusterName \
     ParameterKey=EcsServiceFQDN,ParameterValue=$EcsServiceFQDN \

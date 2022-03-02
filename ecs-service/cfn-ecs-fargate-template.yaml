@@ -171,7 +171,7 @@ Resources:
       RetentionInDays: 90
       LogGroupName: !Join [ "/" , [ /ecs, !Ref 'AWS::StackName' ] ]
 
-  Task:
+  TaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
       Family: !Ref AWS::StackName
@@ -321,10 +321,10 @@ Resources:
               - "ssmmessages:OpenDataChannel"
             Resource: "*"
 
-  Service:
+  FargateService:
     Type: AWS::ECS::Service
     Properties:
-      TaskDefinition: !Ref Task
+      TaskDefinition: !Ref TaskDefinition
       EnableExecuteCommand: true
       Cluster: !Ref EcsClusterName
       LaunchType: FARGATE
@@ -344,7 +344,10 @@ Resources:
       LoadBalancers: 
         - ContainerName: !Ref EcsContainerName
           ContainerPort: !Ref EcsContainerPort
-          TargetGroupArn: !Ref TargetGroup
+          TargetGroupArn: !If
+            - HasLoadBalancerTypeInternal
+            - !Ref InternalLoadBalancerTargetGroup
+            - !Ref ExternalLoadBalancerTargetGroup
 
   SecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -366,10 +369,38 @@ Resources:
         - Key: Name
           Value: !Ref 'AWS::StackName'
 
-  TargetGroup:
+  InternalLoadBalancerTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Condition: HasLoadBalancerTypeInternal
     Properties:
-      Name: !Sub ${AWS::StackName}
+      Name: !Sub ${AWS::StackName}-Internal
+      TargetType: ip
+      VpcId: !Ref VPC
+      Port: 80
+      Protocol: HTTP
+      Matcher:
+        HttpCode: 200-299
+      HealthCheckIntervalSeconds: 30
+      HealthCheckPath: !Ref HealthCheckUri
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 5
+      TargetGroupAttributes:
+      - Key: deregistration_delay.timeout_seconds
+        Value: '30'
+      # - Key: load_balancing.algorithm.type
+      #   Value: 'least_outstanding_requests'
+      - Key: load_balancing.algorithm.type
+        Value: 'round_robin'
+      Tags:
+          - Key: Name
+            Value: !Ref AWS::StackName
+
+  ExternalLoadBalancerTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Condition: HasLoadBalancerTypeExternal
+    Properties:
+      Name: !Sub ${AWS::StackName}-External
       TargetType: ip
       VpcId: !Ref VPC
       Port: 80
@@ -424,7 +455,7 @@ Resources:
             - !Select [ 0, !Ref EcsServiceURI ]
             - !Select [ 1, !Ref EcsServiceURI ]
       Actions:
-        - TargetGroupArn: !Ref TargetGroup
+        - TargetGroupArn: !Ref InternalLoadBalancerTargetGroup
           Type: forward
   HttpsInternalLoadBalancerListenerRule:
     Type: AWS::ElasticLoadBalancingV2::ListenerRule
@@ -444,7 +475,7 @@ Resources:
             - !Select [ 0, !Ref EcsServiceURI ]
             - !Select [ 1, !Ref EcsServiceURI ]
       Actions:
-        - TargetGroupArn: !Ref TargetGroup
+        - TargetGroupArn: !Ref InternalLoadBalancerTargetGroup
           Type: forward
 
   HttpExternalLoadBalancerListenerRule:
@@ -465,7 +496,7 @@ Resources:
             - !Select [ 0, !Ref EcsServiceURI ]
             - !Select [ 1, !Ref EcsServiceURI ]
       Actions:
-        - TargetGroupArn: !Ref TargetGroup
+        - TargetGroupArn: !Ref ExternalLoadBalancerTargetGroup
           Type: forward
 
   HttpsExternalLoadBalancerListenerRule:
@@ -486,7 +517,7 @@ Resources:
             - !Select [ 0, !Ref EcsServiceURI ]
             - !Select [ 1, !Ref EcsServiceURI ]
       Actions:
-        - TargetGroupArn: !Ref TargetGroup
+        - TargetGroupArn: !Ref ExternalLoadBalancerTargetGroup
           Type: forward
 
   ScalableTargetRole:
@@ -524,7 +555,7 @@ Resources:
       RoleARN: !Sub arn:aws:iam::${AWS::AccountId}:role/aws-service-role/ecs.application-autoscaling.amazonaws.com/AWSServiceRoleForApplicationAutoScaling_ECSService
       ServiceNamespace: ecs
       ScalableDimension: ecs:service:DesiredCount
-      ResourceId: !Join [ '/', [ 'service', !Ref EcsClusterName, !GetAtt Service.Name ] ]
+      ResourceId: !Join [ '/', [ 'service', !Ref EcsClusterName, !GetAtt FargateService.Name ] ]
 
   TargetTrackingScalingPolicyMem:
     Type: AWS::ApplicationAutoScaling::ScalingPolicy
@@ -541,10 +572,10 @@ Resources:
 
 Outputs:
   Endpoint:
-    Description: Listener Endpoint
+    Description: Service CNAME Endpoint
     Value: !Join [ '', [ 'https://', !Ref EcsServiceFQDN ] ]
-  OutElbPriority:
-    Description: Listener Rule Priority
+  LoadBalancerListenerRulePriority:
+    Description: Load Balancer Listener Rule Priority
     Value: !If
       - HasLoadBalancerTypeInternal
       - !GetAtt RandomInternalListenerRule.Priority

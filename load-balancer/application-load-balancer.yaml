@@ -103,7 +103,7 @@ Resources:
       LifecycleConfiguration:
         Rules:
           - Id: DeleteLogs
-            Prefix: Logs
+            Prefix: 'Logs/'
             Status: Enabled
             ExpirationInDays: 1
             # Transitions:
